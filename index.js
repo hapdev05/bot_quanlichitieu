@@ -2,6 +2,8 @@ require('dotenv').config();
 const TelegramBot = require('node-telegram-bot-api');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
+const ExcelJS = require('exceljs');
+const schedule = require('node-schedule');
 
 // Initialize bot with options
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { 
@@ -21,6 +23,7 @@ const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 // Constants for files
 const TRANSACTIONS_FILE = 'transactions.json';
 const ACCOUNTS_FILE = 'accounts.json';
+const REMINDERS_FILE = 'reminders.json';
 
 // Initialize files if they don't exist
 if (!fs.existsSync(TRANSACTIONS_FILE)) {
@@ -28,6 +31,9 @@ if (!fs.existsSync(TRANSACTIONS_FILE)) {
 }
 if (!fs.existsSync(ACCOUNTS_FILE)) {
     fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify([]));
+}
+if (!fs.existsSync(REMINDERS_FILE)) {
+    fs.writeFileSync(REMINDERS_FILE, JSON.stringify([]));
 }
 
 // Load transactions
@@ -48,6 +54,16 @@ function loadAccounts() {
 // Save accounts
 function saveAccounts(accounts) {
     fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
+}
+
+// Load reminders
+function loadReminders() {
+    return JSON.parse(fs.readFileSync(REMINDERS_FILE, 'utf8'));
+}
+
+// Save reminders
+function saveReminders(reminders) {
+    fs.writeFileSync(REMINDERS_FILE, JSON.stringify(reminders, null, 2));
 }
 
 // Helper function to format currency
@@ -121,7 +137,7 @@ Cách sử dụng:
     +10k luong
     +1m thuong
 
-Các lệnh:
+Các lệnh cơ bản:
 📊 /xem - Xem sổ thu chi
 📈 /thongke - Xem báo cáo tổng quan
 🤔 /phanTich - Phân tích dữ liệu tài chính
@@ -133,6 +149,14 @@ Quản lý tài khoản:
 ➕ /themtk - Thêm tài khoản mới (VD: /themtk Ví 100k)
 ✏️ /capnhattk - Cập nhật số dư (VD: /capnhattk Ví 150k)
 ❌ /xoatk - Xóa tài khoản (VD: /xoatk Ví)
+
+Tìm kiếm và Lọc:
+🔍 /timkiem [từ khóa] - Tìm giao dịch
+📅 /loc [số ngày] [loại] - Lọc theo thời gian
+
+Tiện ích:
+⏰ /nhacnho - Quản lý nhắc nhở thanh toán định kỳ
+📊 /xuatexcel - Xuất báo cáo Excel
 
 💡 Lưu ý: 
 - k = nghìn (10k = 10,000đ)
@@ -737,6 +761,434 @@ bot.on('callback_query', async (callbackQuery) => {
         bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi xử lý yêu cầu.');
     }
 });
+
+// Command to search transactions
+bot.onText(/\/timkiem (.+)/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const keyword = match[1].toLowerCase();
+    const transactions = loadTransactions();
+
+    const filtered = transactions.filter(t => 
+        t.ghichu.toLowerCase().includes(keyword) || 
+        t.taikhoan.toLowerCase().includes(keyword)
+    );
+
+    if (filtered.length === 0) {
+        bot.sendMessage(chatId, '❌ Không tìm thấy giao dịch nào.');
+        return;
+    }
+
+    let message = `🔍 KẾT QUẢ TÌM KIẾM (${filtered.length} giao dịch)\n\n`;
+    filtered.forEach((t, i) => {
+        const date = new Date(t.ngay).toLocaleDateString('vi-VN');
+        const type = t.loai === 'thu' ? '💰 Thu' : '💸 Chi';
+        message += `${i + 1}. ${type}: ${formatCurrency(t.sotien)}\n📝 ${t.ghichu}\n💳 ${t.taikhoan}\n📅 ${date}\n\n`;
+    });
+
+    bot.sendMessage(chatId, message);
+});
+
+// Command to filter transactions by date range
+bot.onText(/\/loc (.+)/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const params = match[1].split(' ');
+    
+    if (params.length !== 2) {
+        bot.sendMessage(chatId, 
+            '❌ Vui lòng nhập theo định dạng: /loc [số ngày] [loại]\n' +
+            'Loại: thu, chi, all\n' +
+            'Ví dụ:\n' +
+            '/loc 7 all (xem tất cả giao dịch 7 ngày qua)\n' +
+            '/loc 30 thu (xem khoản thu 30 ngày qua)\n' +
+            '/loc 90 chi (xem khoản chi 90 ngày qua)'
+        );
+        return;
+    }
+
+    const days = parseInt(params[0]);
+    const type = params[1].toLowerCase();
+    
+    if (isNaN(days) || days <= 0) {
+        bot.sendMessage(chatId, '❌ Số ngày không hợp lệ.');
+        return;
+    }
+
+    if (!['thu', 'chi', 'all'].includes(type)) {
+        bot.sendMessage(chatId, '❌ Loại giao dịch không hợp lệ. Vui lòng chọn: thu, chi, hoặc all');
+        return;
+    }
+
+    const transactions = loadTransactions();
+    const cutoffDate = new Date();
+    cutoffDate.setDate(cutoffDate.getDate() - days);
+
+    const filtered = transactions.filter(t => {
+        const transDate = new Date(t.ngay);
+        return transDate >= cutoffDate && 
+               (type === 'all' || 
+                (type === 'thu' && t.loai === 'thu') || 
+                (type === 'chi' && t.loai === 'chi'));
+    });
+
+    if (filtered.length === 0) {
+        bot.sendMessage(chatId, '❌ Không có giao dịch nào trong khoảng thời gian này.');
+        return;
+    }
+
+    // Calculate totals
+    const totalIncome = filtered
+        .filter(t => t.loai === 'thu')
+        .reduce((sum, t) => sum + t.sotien, 0);
+    const totalExpense = filtered
+        .filter(t => t.loai === 'chi')
+        .reduce((sum, t) => sum + t.sotien, 0);
+
+    let message = `📊 GIAO DỊCH ${days} NGÀY QUA\n\n`;
+    
+    // Add summary
+    message += `💰 Tổng thu: ${formatCurrency(totalIncome)}\n`;
+    message += `💸 Tổng chi: ${formatCurrency(totalExpense)}\n`;
+    message += `💎 Còn lại: ${formatCurrency(totalIncome - totalExpense)}\n\n`;
+    
+    // Group by account
+    const accountStats = {};
+    filtered.forEach(t => {
+        if (!accountStats[t.taikhoan]) {
+            accountStats[t.taikhoan] = { thu: 0, chi: 0 };
+        }
+        if (t.loai === 'thu') {
+            accountStats[t.taikhoan].thu += t.sotien;
+        } else {
+            accountStats[t.taikhoan].chi += t.sotien;
+        }
+    });
+
+    // Add account summary
+    message += `📊 THEO TÀI KHOẢN:\n`;
+    Object.entries(accountStats).forEach(([account, stats]) => {
+        message += `\n💳 ${account}:\n`;
+        message += `  💰 Thu: ${formatCurrency(stats.thu)}\n`;
+        message += `  💸 Chi: ${formatCurrency(stats.chi)}\n`;
+        message += `  💎 Còn: ${formatCurrency(stats.thu - stats.chi)}\n`;
+    });
+
+    message += `\n📝 CHI TIẾT GIAO DỊCH:\n`;
+    filtered.forEach((t, i) => {
+        const date = new Date(t.ngay).toLocaleDateString('vi-VN');
+        const type = t.loai === 'thu' ? '💰 Thu' : '💸 Chi';
+        message += `\n${i + 1}. ${type}: ${formatCurrency(t.sotien)}\n📝 ${t.ghichu}\n💳 ${t.taikhoan}\n📅 ${date}`;
+    });
+
+    bot.sendMessage(chatId, message);
+});
+
+// Command to add reminder
+bot.onText(/\/nhacnho/, (msg) => {
+    const chatId = msg.chat.id;
+    
+    const options = {
+        reply_markup: {
+            inline_keyboard: [
+                [{ text: '➕ Thêm nhắc nhở mới', callback_data: 'add_reminder' }],
+                [{ text: '📋 Xem danh sách nhắc nhở', callback_data: 'list_reminders' }],
+                [{ text: '❌ Xóa nhắc nhở', callback_data: 'delete_reminder' }]
+            ]
+        }
+    };
+    
+    bot.sendMessage(chatId, '⏰ QUẢN LÝ NHẮC NHỞ THANH TOÁN\n\nChọn thao tác:', options);
+});
+
+// Handle reminder setup flow
+const reminderSetupStates = new Map();
+
+bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const messageId = callbackQuery.message.message_id;
+    const data = callbackQuery.data;
+
+    if (data === 'add_reminder') {
+        reminderSetupStates.set(chatId, { step: 1 });
+        const periods = [
+            [{ text: 'Hàng tháng', callback_data: 'period_monthly' }],
+            [{ text: 'Hàng quý', callback_data: 'period_quarterly' }],
+            [{ text: 'Hàng năm', callback_data: 'period_yearly' }]
+        ];
+        
+        await bot.editMessageText('Chọn chu kỳ nhắc nhở:', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: { inline_keyboard: periods }
+        });
+    }
+    else if (data.startsWith('period_')) {
+        const state = reminderSetupStates.get(chatId) || {};
+        state.period = data.replace('period_', '');
+        state.step = 2;
+        reminderSetupStates.set(chatId, state);
+        
+        await bot.editMessageText(
+            'Nhập số tiền và ghi chú (VD: 100k tiền điện):', 
+            {
+                chat_id: chatId,
+                message_id: messageId
+            }
+        );
+    }
+    else if (data === 'list_reminders') {
+        const reminders = loadReminders();
+        if (reminders.length === 0) {
+            await bot.editMessageText('❌ Chưa có nhắc nhở nào.', {
+                chat_id: chatId,
+                message_id: messageId
+            });
+            return;
+        }
+
+        let message = '📋 DANH SÁCH NHẮC NHỞ\n\n';
+        reminders.forEach((r, i) => {
+            message += `${i + 1}. ${r.note}\n`;
+            message += `💰 Số tiền: ${formatCurrency(r.amount)}\n`;
+            message += `🔄 Định kỳ: ${r.period}\n\n`;
+        });
+
+        await bot.editMessageText(message, {
+            chat_id: chatId,
+            message_id: messageId
+        });
+    }
+    else if (data === 'delete_reminder') {
+        const reminders = loadReminders();
+        if (reminders.length === 0) {
+            await bot.editMessageText('❌ Chưa có nhắc nhở nào để xóa.', {
+                chat_id: chatId,
+                message_id: messageId
+            });
+            return;
+        }
+
+        const keyboard = reminders.map((r, i) => [{
+            text: `${i + 1}. ${r.note} (${formatCurrency(r.amount)})`,
+            callback_data: `delete_reminder_${i}`
+        }]);
+
+        await bot.editMessageText('Chọn nhắc nhở cần xóa:', {
+            chat_id: chatId,
+            message_id: messageId,
+            reply_markup: { inline_keyboard: keyboard }
+        });
+    }
+    else if (data.startsWith('delete_reminder_')) {
+        const index = parseInt(data.split('_')[2]);
+        const reminders = loadReminders();
+        const deleted = reminders.splice(index, 1)[0];
+        saveReminders(reminders);
+        
+        // Cancel the scheduled job
+        const job = schedule.scheduledJobs[deleted.id];
+        if (job) {
+            job.cancel();
+        }
+
+        await bot.editMessageText(`✅ Đã xóa nhắc nhở: ${deleted.note}`, {
+            chat_id: chatId,
+            message_id: messageId
+        });
+    }
+
+    await bot.answerCallbackQuery(callbackQuery.id);
+});
+
+// Handle reminder amount and note input
+bot.on('message', (msg) => {
+    const chatId = msg.chat.id;
+    const state = reminderSetupStates.get(chatId);
+    
+    if (state && state.step === 2) {
+        const text = msg.text.trim();
+        const parts = text.split(/\s+/);
+        const amountStr = parts[0];
+        const note = parts.slice(1).join(' ');
+
+        const amount = parseMoneyString(amountStr);
+        if (!amount) {
+            bot.sendMessage(chatId, '❌ Số tiền không hợp lệ. Vui lòng thử lại (VD: 100k tiền điện)');
+            return;
+        }
+
+        if (!note) {
+            bot.sendMessage(chatId, '❌ Vui lòng nhập ghi chú cho nhắc nhở');
+            return;
+        }
+
+        // Create reminder object
+        const reminder = {
+            id: `reminder_${Date.now()}`,
+            amount,
+            note,
+            period: state.period,
+            chatId,
+            cron: getCronExpression(state.period)
+        };
+
+        // Save reminder
+        const reminders = loadReminders();
+        reminders.push(reminder);
+        saveReminders(reminders);
+
+        // Schedule the reminder
+        scheduleReminder(reminder);
+
+        // Clear setup state
+        reminderSetupStates.delete(chatId);
+
+        bot.sendMessage(
+            chatId,
+            `✅ Đã tạo nhắc nhở:\n\n` +
+            `📝 Ghi chú: ${reminder.note}\n` +
+            `💰 Số tiền: ${formatCurrency(reminder.amount)}\n` +
+            `🔄 Định kỳ: ${reminder.period}`
+        );
+    }
+});
+
+// Helper function to get cron expression
+function getCronExpression(period) {
+    const now = new Date();
+    switch (period) {
+        case 'monthly':
+            return `0 9 ${now.getDate()} * *`; // Same day every month at 9 AM
+        case 'quarterly':
+            return `0 9 ${now.getDate()} */3 *`; // Every 3 months
+        case 'yearly':
+            return `0 9 ${now.getDate()} ${now.getMonth() + 1} *`; // Same date every year
+        default:
+            return '0 9 1 * *'; // First day of every month at 9 AM
+    }
+}
+
+// Schedule all reminders
+function scheduleAllReminders() {
+    const reminders = loadReminders();
+    reminders.forEach(reminder => {
+        scheduleReminder(reminder);
+    });
+}
+
+// Schedule a single reminder
+function scheduleReminder(reminder) {
+    const job = schedule.scheduleJob(reminder.id, reminder.cron, () => {
+        bot.sendMessage(reminder.chatId, 
+            `⏰ NHẮC NHỞ THANH TOÁN!\n\n` +
+            `💰 Khoản: ${reminder.note}\n` +
+            `💵 Số tiền: ${formatCurrency(reminder.amount)}\n` +
+            `🔄 Định kỳ: ${reminder.period}`
+        );
+    });
+    return job;
+}
+
+// Command to export Excel report
+bot.onText(/\/xuatexcel/, async (msg) => {
+    const chatId = msg.chat.id;
+    const transactions = loadTransactions();
+    
+    if (transactions.length === 0) {
+        bot.sendMessage(chatId, '❌ Chưa có giao dịch nào để xuất báo cáo.');
+        return;
+    }
+
+    const fileName = `BaoCaoThuChi_${new Date().toISOString().split('T')[0]}.xlsx`;
+    const filePath = `./${fileName}`;
+
+    try {
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Giao dịch');
+
+        // Add headers
+        worksheet.columns = [
+            { header: 'Ngày', key: 'date', width: 15 },
+            { header: 'Loại', key: 'type', width: 10 },
+            { header: 'Số tiền', key: 'amount', width: 15 },
+            { header: 'Ghi chú', key: 'note', width: 30 },
+            { header: 'Tài khoản', key: 'account', width: 15 }
+        ];
+
+        // Style headers
+        worksheet.getRow(1).font = { bold: true };
+        worksheet.getRow(1).fill = {
+            type: 'pattern',
+            pattern: 'solid',
+            fgColor: { argb: 'FFE0E0E0' }
+        };
+
+        // Add data
+        transactions.forEach(t => {
+            worksheet.addRow({
+                date: new Date(t.ngay).toLocaleDateString('vi-VN'),
+                type: t.loai === 'thu' ? 'Thu' : 'Chi',
+                amount: t.sotien,
+                note: t.ghichu,
+                account: t.taikhoan
+            });
+        });
+
+        // Format amount column
+        worksheet.getColumn('amount').numFmt = '#,##0';
+        
+        // Add summary
+        const totalIncome = transactions
+            .filter(t => t.loai === 'thu')
+            .reduce((sum, t) => sum + t.sotien, 0);
+        const totalExpense = transactions
+            .filter(t => t.loai === 'chi')
+            .reduce((sum, t) => sum + t.sotien, 0);
+
+        const summaryStartRow = worksheet.rowCount + 2;
+        
+        worksheet.addRow([]);
+        const totalIncomeRow = worksheet.addRow(['Tổng thu', '', totalIncome]);
+        const totalExpenseRow = worksheet.addRow(['Tổng chi', '', totalExpense]);
+        const balanceRow = worksheet.addRow(['Số dư', '', totalIncome - totalExpense]);
+
+        // Style summary rows
+        [totalIncomeRow, totalExpenseRow, balanceRow].forEach(row => {
+            if (row && row.getCell) {
+                row.font = { bold: true };
+                const amountCell = row.getCell(3);
+                if (amountCell) {
+                    amountCell.numFmt = '#,##0';
+                }
+            }
+        });
+
+        // Save file
+        await workbook.xlsx.writeFile(filePath);
+
+        // Send file using fs.createReadStream
+        await bot.sendDocument(chatId, fs.createReadStream(filePath), {
+            caption: '📊 BÁO CÁO THU CHI\n' +
+                    `💰 Tổng thu: ${formatCurrency(totalIncome)}\n` +
+                    `💸 Tổng chi: ${formatCurrency(totalExpense)}\n` +
+                    `💎 Số dư: ${formatCurrency(totalIncome - totalExpense)}`
+        });
+
+        // Delete file after sending
+        fs.unlinkSync(filePath);
+
+    } catch (error) {
+        console.error('Error exporting Excel:', error);
+        bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi xuất báo cáo Excel. Chi tiết lỗi: ' + error.message);
+        
+        // Clean up file if it exists
+        if (fs.existsSync(filePath)) {
+            fs.unlinkSync(filePath);
+        }
+    }
+});
+
+// Initialize reminders when bot starts
+scheduleAllReminders();
 
 // Error handling
 bot.on('polling_error', (error) => {

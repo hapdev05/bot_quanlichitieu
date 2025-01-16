@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "sotien": 20000,
+    "ghichu": "trà sữa",
+    "loai": "thu",
+    "ngay": "2025-01-16T06:36:46.754Z",
+    "taikhoan": "Ví"
+  },
+  {
+    "sotien": 20000,
+    "ghichu": "trà đá",
+    "loai": "thu",
+    "ngay": "2025-01-16T06:38:42.247Z",
+    "taikhoan": "Ví"
+  }
+]

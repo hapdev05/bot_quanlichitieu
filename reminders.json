@@ -1,0 +1,10 @@
+[
+  {
+    "id": "reminder_1737009522231",
+    "amount": 20000,
+    "note": "trà đá",
+    "period": "monthly",
+    "chatId": 6765526662,
+    "cron": "0 9 16 * *"
+  }
+]
