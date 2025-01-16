@@ -1,32 +1,8 @@
 [
   {
-    "amount": 1000,
-    "note": "gạo",
-    "type": "income",
-    "date": "2025-01-16T05:57:58.374Z"
-  },
-  {
-    "amount": 10000,
-    "note": "banking",
-    "type": "income",
-    "date": "2025-01-16T05:59:40.587Z"
-  },
-  {
-    "sotien": 10000,
-    "ghichu": "cafe",
-    "loai": "thu",
-    "ngay": "2025-01-16T06:00:54.500Z"
-  },
-  {
-    "sotien": 10000,
-    "ghichu": "tiền mua bánh",
-    "loai": "chi",
-    "ngay": "2025-01-16T06:02:45.757Z"
-  },
-  {
     "sotien": 20000,
-    "ghichu": "cơm",
+    "ghichu": "trà sữa",
     "loai": "chi",
-    "ngay": "2025-01-16T06:04:30.824Z"
+    "ngay": "2025-01-16T06:22:49.699Z"
   }
 ]

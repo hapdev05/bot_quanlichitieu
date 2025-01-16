@@ -80,6 +80,18 @@ function updateUserCooldown(userId) {
     userCooldowns.set(userId, Date.now());
 }
 
+// Helper function to get week number
+function getWeekNumber(date) {
+    const firstDayOfYear = new Date(date.getFullYear(), 0, 1);
+    const pastDaysOfYear = (date - firstDayOfYear) / 86400000;
+    return Math.ceil((pastDaysOfYear + firstDayOfYear.getDay() + 1) / 7);
+}
+
+// Helper function to format date ranges
+function formatDateRange(start, end) {
+    return `${start.toLocaleDateString('vi-VN')} - ${end.toLocaleDateString('vi-VN')}`;
+}
+
 // Command handlers
 bot.onText(/^\/start$/, (msg) => {
     const chatId = msg.chat.id;
@@ -99,6 +111,8 @@ Các lệnh:
 📊 /xem - Xem sổ thu chi
 📈 /thongke - Xem báo cáo tổng quan
 🤔 /phanTich - Phân tích dữ liệu tài chính
+❌ /xoa - Xóa giao dịch
+🗑️ /xoahet - Xóa tất cả lịch sử
 
 💡 Lưu ý: 
 - k = nghìn (10k = 10,000đ)
@@ -200,6 +214,12 @@ bot.onText(/\/thongke/, (msg) => {
     const chatId = msg.chat.id;
     const transactions = loadTransactions();
 
+    if (transactions.length === 0) {
+        bot.sendMessage(chatId, '❌ Chưa có giao dịch nào.');
+        return;
+    }
+
+    // Calculate totals
     const totalIncome = transactions
         .filter(t => t.loai === 'thu')
         .reduce((sum, t) => sum + t.sotien, 0);
@@ -208,10 +228,81 @@ bot.onText(/\/thongke/, (msg) => {
         .filter(t => t.loai === 'chi')
         .reduce((sum, t) => sum + t.sotien, 0);
 
-    const message = `📊 BÁO CÁO THU CHI\n\n` +
-        `💰 Tổng thu: ${formatCurrency(totalIncome)}\n` +
-        `💸 Tổng chi: ${formatCurrency(totalExpense)}\n` +
-        `💎 Số dư: ${formatCurrency(totalIncome - totalExpense)}`;
+    // Group transactions by month
+    const monthlyStats = {};
+    const weeklyStats = {};
+    const currentDate = new Date();
+    const currentYear = currentDate.getFullYear();
+    const currentMonth = currentDate.getMonth();
+
+    transactions.forEach(t => {
+        const date = new Date(t.ngay);
+        const month = date.getMonth();
+        const week = getWeekNumber(date);
+        const monthKey = `${date.getFullYear()}-${month + 1}`;
+        const weekKey = `${date.getFullYear()}-W${week}`;
+
+        // Initialize if not exists
+        if (!monthlyStats[monthKey]) {
+            monthlyStats[monthKey] = { income: 0, expense: 0 };
+        }
+        if (!weeklyStats[weekKey]) {
+            weeklyStats[weekKey] = { income: 0, expense: 0, startDate: new Date(date) };
+        }
+
+        // Add to monthly stats
+        if (t.loai === 'thu') {
+            monthlyStats[monthKey].income += t.sotien;
+        } else {
+            monthlyStats[monthKey].expense += t.sotien;
+        }
+
+        // Add to weekly stats
+        if (t.loai === 'thu') {
+            weeklyStats[weekKey].income += t.sotien;
+        } else {
+            weeklyStats[weekKey].expense += t.sotien;
+        }
+    });
+
+    // Create message
+    let message = `📊 BÁO CÁO THU CHI CỦA PHI\n\n`;
+    message += `💰 Tổng thu: ${formatCurrency(totalIncome)}\n`;
+    message += `💸 Tổng chi: ${formatCurrency(totalExpense)}\n`;
+    message += `💎 Số dư: ${formatCurrency(totalIncome - totalExpense)}\n\n`;
+
+    // Add monthly breakdown (last 3 months)
+    message += `📅 THỐNG KÊ THEO THÁNG\n`;
+    const monthKeys = Object.keys(monthlyStats)
+        .sort((a, b) => b.localeCompare(a))
+        .slice(0, 3);
+
+    monthKeys.forEach(key => {
+        const [year, month] = key.split('-');
+        const stats = monthlyStats[key];
+        message += `\nTháng ${month}/${year}:\n`;
+        message += `  💰 Thu: ${formatCurrency(stats.income)}\n`;
+        message += `  💸 Chi: ${formatCurrency(stats.expense)}\n`;
+        message += `  💎 Còn: ${formatCurrency(stats.income - stats.expense)}\n`;
+    });
+
+    // Add weekly breakdown (last 2 weeks)
+    message += `\n📆 THỐNG KÊ THEO TUẦN\n`;
+    const weekKeys = Object.keys(weeklyStats)
+        .sort((a, b) => b.localeCompare(a))
+        .slice(0, 2);
+
+    weekKeys.forEach(key => {
+        const stats = weeklyStats[key];
+        const startDate = new Date(stats.startDate);
+        const endDate = new Date(startDate);
+        endDate.setDate(startDate.getDate() + 6);
+        
+        message += `\n${formatDateRange(startDate, endDate)}:\n`;
+        message += `  💰 Thu: ${formatCurrency(stats.income)}\n`;
+        message += `  💸 Chi: ${formatCurrency(stats.expense)}\n`;
+        message += `  💎 Còn: ${formatCurrency(stats.income - stats.expense)}\n`;
+    });
 
     bot.sendMessage(chatId, message);
 });
@@ -297,6 +388,124 @@ Trả lời ngắn gọn, súc tích và dễ hiểu.`;
     } catch (error) {
         console.error('Error:', error);
         bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi phân tích dữ liệu. Vui lòng thử lại sau.');
+    }
+});
+
+// Command to delete a transaction
+bot.onText(/\/xoa(\s+\d+)?$/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const index = match[1] ? parseInt(match[1].trim()) - 1 : null;
+
+    try {
+        const transactions = loadTransactions();
+
+        if (transactions.length === 0) {
+            bot.sendMessage(chatId, '❌ Không có giao dịch nào để xóa.');
+            return;
+        }
+
+        if (index === null) {
+            // Show list of transactions with numbers
+            let message = '📝 Danh sách giao dịch:\n\n';
+            transactions.forEach((t, i) => {
+                const date = new Date(t.ngay).toLocaleDateString('vi-VN');
+                const amount = formatCurrency(t.sotien);
+                message += `${i + 1}. ${date}: ${amount} - ${t.ghichu}\n`;
+            });
+            message += '\n💡 Để xóa, hãy gửi "/xoa [số thứ tự]"\nVí dụ: /xoa 1';
+            bot.sendMessage(chatId, message);
+            return;
+        }
+
+        if (index < 0 || index >= transactions.length) {
+            bot.sendMessage(chatId, '❌ Số thứ tự không hợp lệ.');
+            return;
+        }
+
+        // Remove the transaction
+        const deleted = transactions.splice(index, 1)[0];
+        saveTransactions(transactions);
+
+        const date = new Date(deleted.ngay).toLocaleDateString('vi-VN');
+        const amount = formatCurrency(deleted.sotien);
+        bot.sendMessage(chatId, `✅ Đã xóa giao dịch:\n${date}: ${amount} - ${deleted.ghichu}`);
+    } catch (error) {
+        console.error('Error in delete command:', error);
+        bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi xóa giao dịch.');
+    }
+});
+
+// Command to clear all transaction history
+bot.onText(/\/xoahet/, async (msg) => {
+    const chatId = msg.chat.id;
+    
+    try {
+        const transactions = loadTransactions();
+        
+        if (transactions.length === 0) {
+            bot.sendMessage(chatId, '❌ Không có giao dịch nào để xóa.');
+            return;
+        }
+
+        // Ask for confirmation with inline keyboard
+        await bot.sendMessage(
+            chatId,
+            `⚠️ Bạn có chắc chắn muốn xóa tất cả ${transactions.length} giao dịch không?`,
+            {
+                reply_markup: {
+                    inline_keyboard: [
+                        [
+                            { text: '✅ Có, xóa hết', callback_data: 'confirm_delete_all' },
+                            { text: '❌ Không, hủy bỏ', callback_data: 'cancel_delete_all' }
+                        ]
+                    ]
+                }
+            }
+        );
+
+    } catch (error) {
+        console.error('Error in clear history command:', error);
+        bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi xóa lịch sử.');
+    }
+});
+
+// Handle inline keyboard callbacks
+bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const messageId = callbackQuery.message.message_id;
+
+    try {
+        if (callbackQuery.data === 'confirm_delete_all') {
+            const transactions = loadTransactions();
+            const totalAmount = transactions.reduce((sum, t) => sum + t.sotien, 0);
+            const incomeAmount = transactions.reduce((sum, t) => t.loai === 'thu' ? sum + t.sotien : sum, 0);
+            const expenseAmount = transactions.reduce((sum, t) => t.loai === 'chi' ? sum + t.sotien : sum, 0);
+            
+            // Clear all transactions
+            saveTransactions([]);
+            
+            const message = `✅ Đã xóa tất cả ${transactions.length} giao dịch:\n\n` +
+                          `📊 Tổng quan đã xóa:\n` +
+                          `💰 Tổng thu: ${formatCurrency(incomeAmount)}\n` +
+                          `💸 Tổng chi: ${formatCurrency(expenseAmount)}\n` +
+                          `💵 Số dư: ${formatCurrency(totalAmount)}`;
+            
+            await bot.editMessageText(message, {
+                chat_id: chatId,
+                message_id: messageId
+            });
+        } else if (callbackQuery.data === 'cancel_delete_all') {
+            await bot.editMessageText('❌ Đã hủy xóa lịch sử.', {
+                chat_id: chatId,
+                message_id: messageId
+            });
+        }
+        
+        // Answer callback query to remove loading state
+        await bot.answerCallbackQuery(callbackQuery.id);
+    } catch (error) {
+        console.error('Error in callback query:', error);
+        bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi xử lý yêu cầu.');
     }
 });
 
