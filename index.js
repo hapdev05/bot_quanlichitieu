@@ -18,12 +18,16 @@ const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, {
 // Initialize Gemini AI
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 
-// File to store transactions
+// Constants for files
 const TRANSACTIONS_FILE = 'transactions.json';
+const ACCOUNTS_FILE = 'accounts.json';
 
-// Initialize transactions file if it doesn't exist
+// Initialize files if they don't exist
 if (!fs.existsSync(TRANSACTIONS_FILE)) {
     fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify([]));
+}
+if (!fs.existsSync(ACCOUNTS_FILE)) {
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify([]));
 }
 
 // Load transactions
@@ -34,6 +38,16 @@ function loadTransactions() {
 // Save transactions
 function saveTransactions(transactions) {
     fs.writeFileSync(TRANSACTIONS_FILE, JSON.stringify(transactions, null, 2));
+}
+
+// Load accounts
+function loadAccounts() {
+    return JSON.parse(fs.readFileSync(ACCOUNTS_FILE, 'utf8'));
+}
+
+// Save accounts
+function saveAccounts(accounts) {
+    fs.writeFileSync(ACCOUNTS_FILE, JSON.stringify(accounts, null, 2));
 }
 
 // Helper function to format currency
@@ -114,6 +128,12 @@ Các lệnh:
 ❌ /xoa - Xóa giao dịch
 🗑️ /xoahet - Xóa tất cả lịch sử
 
+Quản lý tài khoản:
+💳 /taikhoan - Xem danh sách tài khoản
+➕ /themtk - Thêm tài khoản mới (VD: /themtk Ví 100k)
+✏️ /capnhattk - Cập nhật số dư (VD: /capnhattk Ví 150k)
+❌ /xoatk - Xóa tài khoản (VD: /xoatk Ví)
+
 💡 Lưu ý: 
 - k = nghìn (10k = 10,000đ)
 - m = triệu (1m = 1,000,000đ)`;
@@ -150,13 +170,47 @@ bot.onText(/^(?!\/)[+-]?\d+[km]?\s+.+$/i, async (msg) => {
     const type = moneyStr.startsWith('+') ? 'income' : 'expense';
 
     try {
+        // Kiểm tra tài khoản
+        const accounts = loadAccounts();
+        if (accounts.length === 0) {
+            bot.sendMessage(chatId, '❌ Vui lòng tạo ít nhất một tài khoản trước khi ghi chép thu chi.\nSử dụng lệnh /themtk để thêm tài khoản.');
+            return;
+        }
+
+        // Nếu chỉ có một tài khoản, sử dụng tài khoản đó
+        // Nếu có nhiều tài khoản, hỏi người dùng muốn sử dụng tài khoản nào
+        let selectedAccount;
+        if (accounts.length === 1) {
+            selectedAccount = accounts[0];
+            // Cập nhật số dư tài khoản
+            selectedAccount.sodu += (type === 'income' ? amount : -amount);
+            saveAccounts(accounts);
+        } else {
+            // Tạo keyboard với các tài khoản
+            const keyboard = accounts.map(acc => [{
+                text: `${acc.ten} (${formatCurrency(acc.sodu)})`,
+                callback_data: `select_account:${acc.ten}:${amount}:${type}:${note}`
+            }]);
+
+            await bot.sendMessage(chatId, 
+                '📝 Chọn tài khoản để ghi nhận giao dịch:', 
+                {
+                    reply_markup: {
+                        inline_keyboard: keyboard
+                    }
+                }
+            );
+            return;
+        }
+
         // Lưu giao dịch
         const transactions = loadTransactions();
         const newTransaction = {
             sotien: amount,
             ghichu: note,
             loai: type === 'income' ? 'thu' : 'chi',
-            ngay: new Date().toISOString()
+            ngay: new Date().toISOString(),
+            taikhoan: selectedAccount.ten
         };
         
         transactions.push(newTransaction);
@@ -166,26 +220,91 @@ bot.onText(/^(?!\/)[+-]?\d+[km]?\s+.+$/i, async (msg) => {
         const totalIncome = transactions
             .filter(t => t.loai === 'thu')
             .reduce((sum, t) => sum + t.sotien, 0);
-
         const totalExpense = transactions
             .filter(t => t.loai === 'chi')
             .reduce((sum, t) => sum + t.sotien, 0);
 
-        // Send response with formatted amount and totals
-        const responseMsg = `✅ Đã ghi ${newTransaction.loai === 'thu' ? 'khoản thu 💰' : 'khoản chi 💸'}: ${formatCurrency(newTransaction.sotien)}\n📝 Ghi chú: ${newTransaction.ghichu}\n\n` + 
-            `📊 Tổng kết:\n` +
-            `💰 Tổng thu: ${formatCurrency(totalIncome)}\n` +
-            `💸 Tổng chi: ${formatCurrency(totalExpense)}\n` +
-            `💎 Số dư: ${formatCurrency(totalIncome - totalExpense)}`;
-        
-        await bot.sendMessage(chatId, responseMsg);
+        // Gửi thông báo
+        let message = `✅ Đã ghi nhận giao dịch:\n`;
+        message += `${type === 'income' ? '💰 Thu' : '💸 Chi'}: ${formatCurrency(amount)}\n`;
+        message += `📝 Ghi chú: ${note}\n`;
+        message += `💳 Tài khoản: ${selectedAccount.ten}\n`;
+        message += `💵 Số dư tài khoản: ${formatCurrency(selectedAccount.sodu)}\n\n`;
+        message += `📊 Tổng thu: ${formatCurrency(totalIncome)}\n`;
+        message += `📊 Tổng chi: ${formatCurrency(totalExpense)}\n`;
+        message += `💎 Còn lại: ${formatCurrency(totalIncome - totalExpense)}`;
+
+        bot.sendMessage(chatId, message);
     } catch (error) {
-        console.error('Error:', error);
-        if (error.response && error.response.statusCode === 401) {
-            console.error('Telegram token is invalid');
-            process.exit(1);
+        console.error('Error in transaction handler:', error);
+        bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi ghi nhận giao dịch.');
+    }
+});
+
+// Handle account selection for transactions
+bot.on('callback_query', async (callbackQuery) => {
+    const chatId = callbackQuery.message.chat.id;
+    const messageId = callbackQuery.message.message_id;
+    const data = callbackQuery.data;
+
+    try {
+        if (data.startsWith('select_account:')) {
+            const [, accountName, amount, type, ...noteParts] = data.split(':');
+            const note = noteParts.join(':');
+            const accounts = loadAccounts();
+            const selectedAccount = accounts.find(a => a.ten === accountName);
+
+            if (!selectedAccount) {
+                await bot.sendMessage(chatId, '❌ Không tìm thấy tài khoản này!');
+                return;
+            }
+
+            // Cập nhật số dư tài khoản
+            selectedAccount.sodu += (type === 'income' ? Number(amount) : -Number(amount));
+            saveAccounts(accounts);
+
+            // Lưu giao dịch
+            const transactions = loadTransactions();
+            const newTransaction = {
+                sotien: Number(amount),
+                ghichu: note,
+                loai: type === 'income' ? 'thu' : 'chi',
+                ngay: new Date().toISOString(),
+                taikhoan: accountName
+            };
+            
+            transactions.push(newTransaction);
+            saveTransactions(transactions);
+
+            // Tính tổng thu chi
+            const totalIncome = transactions
+                .filter(t => t.loai === 'thu')
+                .reduce((sum, t) => sum + t.sotien, 0);
+            const totalExpense = transactions
+                .filter(t => t.loai === 'chi')
+                .reduce((sum, t) => sum + t.sotien, 0);
+
+            // Cập nhật tin nhắn
+            let message = `✅ Đã ghi nhận giao dịch:\n`;
+            message += `${type === 'income' ? '💰 Thu' : '💸 Chi'}: ${formatCurrency(Number(amount))}\n`;
+            message += `📝 Ghi chú: ${note}\n`;
+            message += `💳 Tài khoản: ${accountName}\n`;
+            message += `💵 Số dư tài khoản: ${formatCurrency(selectedAccount.sodu)}\n\n`;
+            message += `📊 Tổng thu: ${formatCurrency(totalIncome)}\n`;
+            message += `📊 Tổng chi: ${formatCurrency(totalExpense)}\n`;
+            message += `💎 Còn lại: ${formatCurrency(totalIncome - totalExpense)}`;
+
+            await bot.editMessageText(message, {
+                chat_id: chatId,
+                message_id: messageId
+            });
         }
-        bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi xử lý giao dịch. Vui lòng thử lại.');
+        
+        // Answer callback query to remove loading state
+        await bot.answerCallbackQuery(callbackQuery.id);
+    } catch (error) {
+        console.error('Error in callback query:', error);
+        bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi xử lý yêu cầu.');
     }
 });
 
@@ -203,7 +322,7 @@ bot.onText(/\/xem/, (msg) => {
     transactions.forEach((t, i) => {
         const date = new Date(t.ngay).toLocaleDateString('vi-VN');
         const type = t.loai === 'thu' ? '💰 Thu' : '💸 Chi';
-        message += `${i + 1}. ${type}: ${formatCurrency(t.sotien)}\n📝 ${t.ghichu}\n📅 ${date}\n\n`;
+        message += `${i + 1}. ${type}: ${formatCurrency(t.sotien)}\n📝 ${t.ghichu}\n💳 ${t.taikhoan}\n📅 ${date}\n\n`;
     });
 
     bot.sendMessage(chatId, message);
@@ -389,6 +508,116 @@ Trả lời ngắn gọn, súc tích và dễ hiểu.`;
         console.error('Error:', error);
         bot.sendMessage(chatId, '❌ Có lỗi xảy ra khi phân tích dữ liệu. Vui lòng thử lại sau.');
     }
+});
+
+// Command to add new account
+bot.onText(/\/themtk (.+)/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const input = match[1].split(' ');
+    
+    if (input.length < 2) {
+        bot.sendMessage(chatId, '❌ Vui lòng nhập theo định dạng: /themtk [tên tài khoản] [số dư]\nVí dụ: /themtk Ví 100k');
+        return;
+    }
+
+    const balance = parseMoneyString(input[input.length - 1]);
+    if (balance === null) {
+        bot.sendMessage(chatId, '❌ Số dư không hợp lệ. Vui lòng sử dụng định dạng: 100k, 1m, ...');
+        return;
+    }
+
+    const name = input.slice(0, -1).join(' ');
+    const accounts = loadAccounts();
+    
+    // Check if account already exists
+    if (accounts.some(a => a.ten.toLowerCase() === name.toLowerCase())) {
+        bot.sendMessage(chatId, '❌ Tài khoản này đã tồn tại!');
+        return;
+    }
+
+    accounts.push({
+        ten: name,
+        sodu: balance
+    });
+    
+    saveAccounts(accounts);
+    bot.sendMessage(chatId, `✅ Đã thêm tài khoản "${name}" với số dư ${formatCurrency(balance)}`);
+});
+
+// Command to view accounts
+bot.onText(/\/taikhoan/, (msg) => {
+    const chatId = msg.chat.id;
+    const accounts = loadAccounts();
+
+    if (accounts.length === 0) {
+        bot.sendMessage(chatId, '❌ Chưa có tài khoản nào.');
+        return;
+    }
+
+    let message = '💳 DANH SÁCH TÀI KHOẢN\n\n';
+    let totalBalance = 0;
+
+    accounts.forEach((account, index) => {
+        message += `${index + 1}. ${account.ten}\n`;
+        message += `   💰 Số dư: ${formatCurrency(account.sodu)}\n\n`;
+        totalBalance += account.sodu;
+    });
+
+    message += `\n💵 TỔNG SỐ DƯ: ${formatCurrency(totalBalance)}`;
+    bot.sendMessage(chatId, message);
+});
+
+// Command to delete account
+bot.onText(/\/xoatk (.+)/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const accountName = match[1];
+    const accounts = loadAccounts();
+    
+    const index = accounts.findIndex(a => a.ten.toLowerCase() === accountName.toLowerCase());
+    if (index === -1) {
+        bot.sendMessage(chatId, '❌ Không tìm thấy tài khoản này!');
+        return;
+    }
+
+    const deleted = accounts.splice(index, 1)[0];
+    saveAccounts(accounts);
+    bot.sendMessage(chatId, `✅ Đã xóa tài khoản "${deleted.ten}" với số dư ${formatCurrency(deleted.sodu)}`);
+});
+
+// Command to update account balance
+bot.onText(/\/capnhattk (.+)/, (msg, match) => {
+    const chatId = msg.chat.id;
+    const input = match[1].split(' ');
+    
+    if (input.length < 2) {
+        bot.sendMessage(chatId, '❌ Vui lòng nhập theo định dạng: /capnhattk [tên tài khoản] [số dư mới]\nVí dụ: /capnhattk Ví 150k');
+        return;
+    }
+
+    const newBalance = parseMoneyString(input[input.length - 1]);
+    if (newBalance === null) {
+        bot.sendMessage(chatId, '❌ Số dư không hợp lệ. Vui lòng sử dụng định dạng: 100k, 1m, ...');
+        return;
+    }
+
+    const accountName = input.slice(0, -1).join(' ');
+    const accounts = loadAccounts();
+    
+    const account = accounts.find(a => a.ten.toLowerCase() === accountName.toLowerCase());
+    if (!account) {
+        bot.sendMessage(chatId, '❌ Không tìm thấy tài khoản này!');
+        return;
+    }
+
+    const oldBalance = account.sodu;
+    account.sodu = newBalance;
+    saveAccounts(accounts);
+    
+    bot.sendMessage(chatId, 
+        `✅ Đã cập nhật số dư tài khoản "${account.ten}":\n` +
+        `Số dư cũ: ${formatCurrency(oldBalance)}\n` +
+        `Số dư mới: ${formatCurrency(newBalance)}`
+    );
 });
 
 // Command to delete a transaction
