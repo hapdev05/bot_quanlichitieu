@@ -1,9 +1,22 @@
 require('dotenv').config();
+const express = require('express');
+const app = express();
 const TelegramBot = require('node-telegram-bot-api');
 const { GoogleGenerativeAI } = require('@google/generative-ai');
 const fs = require('fs');
 const ExcelJS = require('exceljs');
 const schedule = require('node-schedule');
+
+// Express route for health check
+app.get('/', (req, res) => {
+    res.send('Bot is running!');
+});
+
+// Start Express server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`Server is running on port ${PORT}`);
+});
 
 // Initialize bot with options
 const bot = new TelegramBot(process.env.TELEGRAM_BOT_TOKEN, { 
@@ -125,7 +138,7 @@ function formatDateRange(start, end) {
 // Command handlers
 bot.onText(/^\/start$/, (msg) => {
     const chatId = msg.chat.id;
-    const welcome = `Xin chào! Tôi là Bot Quản lý Thu Chi 💰
+    const welcome = `Xin chào! Tôi là Bot Quản lý Thu Chi 
 
 Cách sử dụng:
 1️⃣ Ghi khoản chi (mặc định): 
@@ -481,41 +494,33 @@ bot.onText(/\/phanTich/, async (msg) => {
         });
 
         // Tạo context cho AI
-        const context = `Phân tích các giao dịch tài chính sau:
-
-TỔNG QUAN:
-- Tổng thu: ${formatCurrency(totalIncome)}
-- Tổng chi: ${formatCurrency(totalExpense)}
-- Số dư: ${formatCurrency(totalIncome - totalExpense)}
-
-CHI TIẾT GIAO DỊCH THEO NGÀY:
-${Object.entries(transactionsByDate).map(([date, txs]) => `
-${date}:
-${txs.map(t => `- ${t.loai === 'thu' ? 'Thu' : 'Chi'}: ${formatCurrency(t.sotien)} - ${t.ghichu}`).join('\n')}`).join('\n')}
-
-Hãy phân tích và trả lời các câu hỏi sau (trả lời bằng tiếng Việt):
-
-1. Tình hình thu chi:
-- Thu nhập và chi tiêu có cân đối không?
-- Tỷ lệ thu/chi như thế nào?
-
-2. Các khoản chi tiêu:
-- Những khoản chi tiêu lớn nhất?
-- Có khoản chi tiêu bất thường không?
-- Chi tiêu tập trung vào những mục nào?
-
-3. Xu hướng:
-- Xu hướng chi tiêu theo thời gian?
-- Có ngày nào chi tiêu nhiều bất thường không?
-
-4. Lời khuyên:
-- Cần điều chỉnh gì để cải thiện tình hình tài chính?
-- Các gợi ý để tiết kiệm và quản lý chi tiêu tốt hơn?
-
-Trả lời ngắn gọn, súc tích và dễ hiểu.`;
+        const context = 'Phân tích các giao dịch tài chính sau:\n\n' +
+            'TỔNG QUAN:\n' +
+            `- Tổng thu: ${formatCurrency(totalIncome)}\n` +
+            `- Tổng chi: ${formatCurrency(totalExpense)}\n` +
+            `- Số dư: ${formatCurrency(totalIncome - totalExpense)}\n\n` +
+            'CHI TIẾT GIAO DỊCH THEO NGÀY:\n' +
+            Object.entries(transactionsByDate).map(([date, txs]) => 
+                `${date}:\n` +
+                txs.map(t => `- ${t.loai === 'thu' ? 'Thu' : 'Chi'}: ${formatCurrency(t.sotien)} - ${t.ghichu}`).join('\n')
+            ).join('\n') +
+            '\n\nHãy phân tích và trả lời các câu hỏi sau (trả lời bằng tiếng Việt):\n\n' +
+            '1. Tình hình thu chi:\n' +
+            '- Thu nhập và chi tiêu có cân đối không?\n' +
+            '- Tỷ lệ thu/chi như thế nào?\n\n' +
+            '2. Các khoản chi tiêu:\n' +
+            '- Những khoản chi tiêu lớn nhất?\n' +
+            '- Có khoản chi tiêu bất thường không?\n' +
+            '- Chi tiêu tập trung vào những mục nào?\n\n' +
+            '3. Xu hướng:\n' +
+            '- Xu hướng chi tiêu theo thời gian?\n' +
+            '- Có ngày nào chi tiêu nhiều bất thường không?\n\n' +
+            '4. Lời khuyên:\n' +
+            '- Cần điều chỉnh gì để cải thiện tình hình tài chính?\n' +
+            '- Các gợi ý để tiết kiệm và quản lý chi tiêu tốt hơn?\n';
 
         // Gửi tin nhắn chờ
-        const waitingMsg = await bot.sendMessage(chatId, '🤔 Đang phân tích dữ liệu...');
+        const waitingMsg = await bot.sendMessage(chatId, '🤔 Đang phân tích dữ liệu…');
 
         // Gọi Gemini API
         const model = genAI.getGenerativeModel({ model: "gemini-pro" });
